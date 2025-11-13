@@ -1,28 +1,10 @@
 use std::fmt;
-use std::{error::Error, fmt::Display, str::FromStr};
+use std::{fmt::Display, str::FromStr};
 
-#[derive(Debug)]
-enum ParseChunkTypeError {
-    InvalidLength { expected: usize, found: usize },
-    InvalidCharacters,
-}
-
-impl Error for ParseChunkTypeError {}
-
-impl Display for ParseChunkTypeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidCharacters => write!(f, "Bytecode contains invalide characters!"),
-            Self::InvalidLength { expected, found } => write!(
-                f,
-                "Invalid bytecode length: expected {expected}, found {found}"
-            ),
-        }
-    }
-}
+use crate::Error;
 
 #[derive(Debug, PartialEq, Eq)]
-struct ChunkType {
+pub struct ChunkType {
     bytes: [u8; 4],
     critical: bool,
     public: bool,
@@ -57,11 +39,11 @@ impl ChunkType {
 }
 
 impl TryFrom<[u8; 4]> for ChunkType {
-    type Error = ParseChunkTypeError;
+    type Error = Error;
 
     fn try_from(bytes: [u8; 4]) -> Result<Self, Self::Error> {
         if !bytes.iter().all(|&byte| byte.is_ascii_alphabetic()) {
-            return Err(ParseChunkTypeError::InvalidCharacters);
+            return Err("Bytecode contains invalide characters!".into());
         }
 
         Ok(ChunkType {
@@ -75,17 +57,10 @@ impl TryFrom<[u8; 4]> for ChunkType {
 }
 
 impl FromStr for ChunkType {
-    type Err = ParseChunkTypeError;
+    type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let bytes = s.as_bytes();
-        let bytecode: [u8; 4] =
-            s.as_bytes()
-                .try_into()
-                .map_err(|_| ParseChunkTypeError::InvalidLength {
-                    expected: 4,
-                    found: bytes.len(),
-                })?;
+        let bytecode: [u8; 4] = s.as_bytes().try_into()?;
         ChunkType::try_from(bytecode)
     }
 }
