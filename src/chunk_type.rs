@@ -1,73 +1,112 @@
 use std::fmt;
 use std::{fmt::Display, str::FromStr};
 
-use crate::Error;
-
-#[derive(Debug, PartialEq, Eq)]
+/// PNG chunk type as defined in the PNG specification.
+/// Each byte represents a property via its 5th bit (0 = uppercase, 1 = lowercase):
+/// - Byte 0: Critical (A-Z) vs Ancillary (a-z)
+/// - Byte 1: Public (A-Z) vs Private (a-z)
+/// - Byte 2: Reserved - must be uppercase
+/// - Byte 3: Unsafe to copy (A-Z) vs Safe to copy (a-z)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChunkType {
     bytes: [u8; 4],
-    critical: bool,
-    public: bool,
-    safe_to_copy: bool,
-    valid_reserved_bit: bool,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ChunkTypeError {
+    #[error("Byte at index {index} (0x{byte:02X}) is not an ASCII alphabetic character")]
+    InvalidByte { byte: u8, index: usize },
+    #[error("Invalid length: expected 4 bytes, got {0}")]
+    InvalidLength(usize),
 }
 
 impl ChunkType {
+    /// Returns the raw 4-byte chunk type.
     pub fn bytes(&self) -> [u8; 4] {
         self.bytes
     }
 
+    /// Checks if all bytes are alphabetic and the reserved bit (byte 2) is valid.
     pub fn is_valid(&self) -> bool {
-        self.bytes().iter().all(|&byte| byte.is_ascii_alphabetic()) && self.valid_reserved_bit
+        self.bytes.iter().all(|&b| b.is_ascii_alphabetic()) && self.is_reserved_bit_valid()
     }
 
+    /// True if the chunk is critical (first byte is uppercase).
     pub fn is_critical(&self) -> bool {
-        self.critical
+        !self.is_bit_set(0)
     }
 
+    /// True if the chunk is public (second byte is uppercase).
     pub fn is_public(&self) -> bool {
-        self.public
+        !self.is_bit_set(1)
     }
 
+    /// True if the reserved bit (third byte) is valid (uppercase).
     pub fn is_reserved_bit_valid(&self) -> bool {
-        self.valid_reserved_bit
+        !self.is_bit_set(2)
     }
 
+    /// True if the chunk is safe to copy (fourth byte is lowercase).
     pub fn is_safe_to_copy(&self) -> bool {
-        self.safe_to_copy
+        self.is_bit_set(3)
+    }
+
+    /// Checks if the 5th bit (0x20) is set in the byte at the given index.
+    #[inline]
+    fn is_bit_set(&self, index: usize) -> bool {
+        const PROPERTY_BIT_MASK: u8 = 0b0010_0000;
+        self.bytes[index] & PROPERTY_BIT_MASK != 0
     }
 }
 
 impl TryFrom<[u8; 4]> for ChunkType {
-    type Error = Error;
+    type Error = ChunkTypeError;
 
     fn try_from(bytes: [u8; 4]) -> Result<Self, Self::Error> {
-        if !bytes.iter().all(|&byte| byte.is_ascii_alphabetic()) {
-            return Err("Bytecode contains invalide characters!".into());
+        for (index, &byte) in bytes.iter().enumerate() {
+            if !byte.is_ascii_alphabetic() {
+                return Err(ChunkTypeError::InvalidByte { byte, index });
+            }
         }
 
-        Ok(ChunkType {
-            bytes,
-            critical: bytes[0] & 0b0010_0000 == 0,
-            public: bytes[1] & 0b0010_0000 == 0,
-            valid_reserved_bit: bytes[2] & 0b0010_0000 == 0,
-            safe_to_copy: bytes[3] & 0b0010_0000 != 0,
-        })
+        Ok(ChunkType { bytes })
+    }
+}
+
+impl TryFrom<&[u8]> for ChunkType {
+    type Error = ChunkTypeError;
+
+    fn try_from(slice: &[u8]) -> Result<Self, Self::Error> {
+        let bytes: [u8; 4] = slice
+            .try_into()
+            .map_err(|_| ChunkTypeError::InvalidLength(slice.len()))?;
+        ChunkType::try_from(bytes)
     }
 }
 
 impl FromStr for ChunkType {
-    type Err = Error;
+    type Err = ChunkTypeError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let bytecode: [u8; 4] = s.as_bytes().try_into()?;
-        ChunkType::try_from(bytecode)
+        let bytes: [u8; 4] = s
+            .as_bytes()
+            .try_into()
+            .map_err(|_| ChunkTypeError::InvalidLength(s.len()))?;
+        ChunkType::try_from(bytes)
     }
 }
 
 impl Display for ChunkType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", str::from_utf8(&self.bytes).unwrap())
+        // Safe because we validated bytes are ASCII alphabetic in try_from
+        let s = str::from_utf8(&self.bytes).expect("bytes are valid ASCII");
+        write!(f, "{}", s)
+    }
+}
+
+impl AsRef<[u8]> for ChunkType {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
     }
 }
 
