@@ -1,33 +1,71 @@
 use std::fmt;
-use std::string::FromUtf8Error;
 
-use crate::{Error, chunk_type::ChunkType};
+use crate::{chunk_type::ChunkType, chunk_type::ChunkTypeError};
 use crc::{CRC_32_ISO_HDLC, Crc};
 
-struct Chunk {
-    length: u32,
+/// CRC-32 algorithm used for PNG chunk verification (ISO/HDLC).
+const CRC: Crc<u32> = Crc::<u32>::new(&CRC_32_ISO_HDLC);
+// LENGTH(4) + CHUNK_TYPE(4)
+const HEADER_SIZE: usize = 8;
+const CRC_SIZE: usize = 4;
+
+/// PNG chunk as defined in the PNG specification.
+///
+/// # Format
+/// - Length: 4 bytes (big-endian u32)
+/// - Chunk Type: 4 bytes
+/// - Data: variable length
+/// - CRC: 4 bytes (over chunk type + data)
+pub struct Chunk {
     chunk_type: ChunkType,
     data: Vec<u8>,
     crc: u32,
 }
 
-impl Chunk {
-    fn new(chunk_type: ChunkType, data: Vec<u8>) -> Self {
-        let length: u32 = data.len().try_into().expect("PNG Data is too long!!");
-        let mut bytes = Vec::from(chunk_type.bytes());
-        bytes.extend_from_slice(&data);
-        let crc: u32 = Crc::<u32>::new(&CRC_32_ISO_HDLC).checksum(&bytes);
+/// Errors that can occur when parsing or constructing a PNG chunk.
+#[derive(Debug, thiserror::Error)]
+pub enum ChunkError {
+    #[error("Insufficient data: need at least {required} bytes, got {actual}")]
+    NotEnoughBytes { required: usize, actual: usize },
 
+    #[error("Invalid chunk type")]
+    InvalidChunkType(#[from] ChunkTypeError),
+
+    #[error("CRC verification failed: expected 0x{expected:08X}, actual 0x{actual:08X}")]
+    CrcMismatch { expected: u32, actual: u32 },
+}
+
+impl Chunk {
+    /// Creates a new chunk by calculating CRC from type and data.
+    pub fn new(chunk_type: ChunkType, data: Vec<u8>) -> Self {
+        let crc: u32 = Self::calculate_crc(&chunk_type, &data);
         Chunk {
-            length,
             chunk_type,
             data,
             crc,
         }
     }
 
+    /// Creates a chunk from raw components without CRC calculation.
+    /// Only used internally for TryFrom after CRC verification.
+    fn from_verified_parts(chunk_type: ChunkType, data: Vec<u8>, crc: u32) -> Self {
+        Chunk {
+            chunk_type,
+            data,
+            crc,
+        }
+    }
+
+    /// Calculates the CRC-32 checksum for a chunk type and data.
+    fn calculate_crc(chunk_type: &ChunkType, data: &[u8]) -> u32 {
+        let mut digest = CRC.digest();
+        digest.update(&chunk_type.bytes());
+        digest.update(data);
+        digest.finalize()
+    }
+
     fn length(&self) -> u32 {
-        self.length
+        self.data.len() as u32
     }
 
     fn chunk_type(&self) -> &ChunkType {
@@ -42,60 +80,104 @@ impl Chunk {
         self.crc
     }
 
-    fn data_as_string(&self) -> Result<String, FromUtf8Error> {
+    /// Returns data as a UTF-8 string slice.
+    pub fn data_as_str(&self) -> Result<&str, std::str::Utf8Error> {
+        str::from_utf8(&self.data)
+    }
+
+    /// Returns data as an owned UTF-8 String.
+    pub fn data_as_string(&self) -> Result<String, std::string::FromUtf8Error> {
         String::from_utf8(self.data.clone())
     }
 
-    fn as_bytes(&self) -> Vec<u8> {
-        self.length
-            .to_be_bytes()
-            .into_iter()
-            .chain(self.chunk_type.bytes())
-            .chain(self.data.clone())
-            .chain(self.crc.to_be_bytes())
-            .collect()
+    /// Serializes the chunk to its wire format.
+    pub fn as_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(HEADER_SIZE + CRC_SIZE + self.data.len());
+        bytes.extend_from_slice(&self.length().to_be_bytes());
+        bytes.extend_from_slice(&self.chunk_type.bytes());
+        bytes.extend_from_slice(&self.data);
+        bytes.extend_from_slice(&self.crc.to_be_bytes());
+        bytes
     }
 }
 
 impl TryFrom<&[u8]> for Chunk {
-    type Error = Error;
+    type Error = ChunkError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
-        if bytes.len() < 12 {
-            return Err("Not enough bytes!!".into());
+        const MIN_SIZE: usize = HEADER_SIZE + CRC_SIZE;
+
+        if bytes.len() < MIN_SIZE {
+            return Err(ChunkError::NotEnoughBytes {
+                required: MIN_SIZE,
+                actual: bytes.len(),
+            });
         }
 
-        let data_end = bytes.len() - 4;
-        let length = u32::from_be_bytes(bytes[..4].try_into().unwrap());
-        let chunk_bytes: [u8; 4] = bytes[4..8].try_into().unwrap();
+        // Check declared data lenght match actual data length
+        let declared_length = u32::from_be_bytes(
+            bytes[0..4]
+                .try_into()
+                .expect("MIN_SIZE check ensures length bytes is valid"),
+        );
+        let data_len = declared_length as usize;
+        let total_len = HEADER_SIZE + data_len + CRC_SIZE;
+
+        if bytes.len() < total_len {
+            return Err(ChunkError::NotEnoughBytes {
+                required: total_len,
+                actual: bytes.len(),
+            });
+        }
+
+        let chunk_bytes: [u8; 4] = bytes[4..8]
+            .try_into()
+            .expect("MIN_SIZE check ensures chunk_type bytes is valid");
         let chunk_type = ChunkType::try_from(chunk_bytes)?;
-        let data = bytes[8..data_end].to_vec();
-        let crc = u32::from_be_bytes(bytes[data_end..].try_into().unwrap());
 
-        let chunk = Chunk::new(chunk_type, data);
-        if crc == chunk.crc {
-            Ok(chunk)
-        } else {
-            Err("Unmatch checksum!!".into())
+        let data = bytes[8..8 + data_len].to_vec();
+
+        let crc_start = 8 + data_len;
+        let crc_bytes: [u8; 4] = bytes[crc_start..crc_start + CRC_SIZE]
+            .try_into()
+            .expect("total_len check ensures crc bytes is valid");
+        let crc = u32::from_be_bytes(crc_bytes);
+
+        // Verify CRC
+        let expected_crc = Self::calculate_crc(&chunk_type, &data);
+        if crc != expected_crc {
+            return Err(ChunkError::CrcMismatch {
+                expected: expected_crc,
+                actual: crc,
+            });
         }
+
+        Ok(Self::from_verified_parts(chunk_type, data, crc))
     }
 }
 
 impl fmt::Display for Chunk {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Format data as hex bytes
-        let data_hex = self
-            .data
-            .iter()
-            .map(|byte| format!("{:02X}", byte))
-            .collect::<Vec<_>>()
-            .join(" ");
+        writeln!(f, "Chunk {{")?;
+        writeln!(f, "  Length: {}", self.length())?;
+        writeln!(f, "  Type: {}", self.chunk_type)?;
 
-        write!(
-            f,
-            "Chunk {{\n  Length: {}\n  Type: {}\n  Data: [{}]\n  CRC: 0x{:08X}\n}}",
-            self.length, self.chunk_type, data_hex, self.crc
-        )
+        write!(f, "  Data: [")?;
+        for (i, &byte) in self.data.iter().enumerate() {
+            if i > 0 {
+                write!(f, " ")?;
+            }
+            write!(f, "{:02X}", byte)?;
+        }
+        writeln!(f, "]")?;
+        writeln!(f, "  CRC: 0x{:08X}", self.crc)?;
+        write!(f, "}}")
+    }
+}
+
+impl AsRef<[u8]> for Chunk {
+    fn as_ref(&self) -> &[u8] {
+        &self.data
     }
 }
 
