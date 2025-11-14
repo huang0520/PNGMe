@@ -1,13 +1,13 @@
 use std::fmt;
 
-use crate::{chunk_type::ChunkType, chunk_type::ChunkTypeError};
+use crate::{
+    chunk_type::{ChunkType, ChunkTypeError},
+    utils::{self, SliceError},
+};
 use crc::{CRC_32_ISO_HDLC, Crc};
 
 /// CRC-32 algorithm used for PNG chunk verification (ISO/HDLC).
 const CRC: Crc<u32> = Crc::<u32>::new(&CRC_32_ISO_HDLC);
-// LENGTH(4) + CHUNK_TYPE(4)
-const HEADER_SIZE: usize = 8;
-const CRC_SIZE: usize = 4;
 
 /// PNG chunk as defined in the PNG specification.
 ///
@@ -36,6 +36,10 @@ pub enum ChunkError {
 }
 
 impl Chunk {
+    pub const LENGTH_BYTES_SIZE: usize = 4;
+    pub const TYPE_BYTES_SIZE: usize = 4;
+    pub const CRC_BYTES_SIZE: usize = 4;
+
     /// Creates a new chunk by calculating CRC from type and data.
     pub fn new(chunk_type: ChunkType, data: Vec<u8>) -> Self {
         let crc: u32 = Self::calculate_crc(&chunk_type, &data);
@@ -92,7 +96,12 @@ impl Chunk {
 
     /// Serializes the chunk to its wire format.
     pub fn as_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(HEADER_SIZE + CRC_SIZE + self.data.len());
+        let mut bytes = Vec::with_capacity(
+            Self::LENGTH_BYTES_SIZE
+                + Self::TYPE_BYTES_SIZE
+                + Self::CRC_BYTES_SIZE
+                + self.data.len(),
+        );
         bytes.extend_from_slice(&self.length().to_be_bytes());
         bytes.extend_from_slice(&self.chunk_type.bytes());
         bytes.extend_from_slice(&self.data);
@@ -105,42 +114,31 @@ impl TryFrom<&[u8]> for Chunk {
     type Error = ChunkError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
-        const MIN_SIZE: usize = HEADER_SIZE + CRC_SIZE;
-
-        if bytes.len() < MIN_SIZE {
-            return Err(ChunkError::NotEnoughBytes {
-                required: MIN_SIZE,
-                actual: bytes.len(),
-            });
-        }
-
         // Check declared data lenght match actual data length
         let declared_length = u32::from_be_bytes(
-            bytes[0..4]
+            utils::get_slice(&bytes, ..Self::LENGTH_BYTES_SIZE)?
                 .try_into()
-                .expect("MIN_SIZE check ensures length bytes is valid"),
+                .expect("safe due to get_slice() ensures slice with length 4"),
         );
+
+        let chunk_type_start = Self::LENGTH_BYTES_SIZE;
+        let chunk_type_bytes: [u8; 4] = utils::get_slice(
+            &bytes,
+            chunk_type_start..chunk_type_start + Self::TYPE_BYTES_SIZE,
+        )?
+        .try_into()
+        .expect("safe due to get_slice() ensures slice with length 4");
+        let chunk_type = ChunkType::try_from(chunk_type_bytes)?;
+
+        let data_start = chunk_type_start + Self::TYPE_BYTES_SIZE;
         let data_len = declared_length as usize;
-        let total_len = HEADER_SIZE + data_len + CRC_SIZE;
+        let data = utils::get_slice(&bytes, data_start..data_start + data_len)?.to_vec();
 
-        if bytes.len() < total_len {
-            return Err(ChunkError::NotEnoughBytes {
-                required: total_len,
-                actual: bytes.len(),
-            });
-        }
-
-        let chunk_bytes: [u8; 4] = bytes[4..8]
-            .try_into()
-            .expect("MIN_SIZE check ensures chunk_type bytes is valid");
-        let chunk_type = ChunkType::try_from(chunk_bytes)?;
-
-        let data = bytes[8..8 + data_len].to_vec();
-
-        let crc_start = 8 + data_len;
-        let crc_bytes: [u8; 4] = bytes[crc_start..crc_start + CRC_SIZE]
-            .try_into()
-            .expect("total_len check ensures crc bytes is valid");
+        let crc_start = data_start + data_len;
+        let crc_bytes: [u8; 4] =
+            utils::get_slice(&bytes, crc_start..crc_start + Self::CRC_BYTES_SIZE)?
+                .try_into()
+                .expect("safe due to get_slice() ensures slice with length 4");
         let crc = u32::from_be_bytes(crc_bytes);
 
         // Verify CRC
@@ -178,6 +176,17 @@ impl fmt::Display for Chunk {
 impl AsRef<[u8]> for Chunk {
     fn as_ref(&self) -> &[u8] {
         &self.data
+    }
+}
+
+impl From<SliceError> for ChunkError {
+    fn from(error: SliceError) -> Self {
+        match error {
+            SliceError::OutOfBounds { start, end, len } => Self::NotEnoughBytes {
+                required: end.saturating_sub(start),
+                actual: len,
+            },
+        }
     }
 }
 
