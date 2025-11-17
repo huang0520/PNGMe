@@ -8,5 +8,6 @@ repository = "https://github.com/huang0520/PNGMe"
 license = "MIT"
 
 [dependencies]
+clap = { version = "4.5.51", features = ["derive"] }
 crc = "3.3.0"
 thiserror = "2.0.17"
