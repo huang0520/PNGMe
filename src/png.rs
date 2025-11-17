@@ -228,7 +228,7 @@ impl TryFrom<&[u8]> for Png {
                     .get(offset..offset + 4)
                     .ok_or_else(|| PngError::NotEnoughBytes {
                         position: offset,
-                        required: Chunk::LENGTH_BYTES_SIZE,
+                        required: Chunk::LENGTH_SIZE,
                         actual: bytes.len().saturating_sub(offset),
                     })?;
 
@@ -239,10 +239,8 @@ impl TryFrom<&[u8]> for Png {
             ) as usize;
 
             // Calculate total chunk length: length field + type field + data + CRC
-            let chunk_length = data_length
-                + Chunk::LENGTH_BYTES_SIZE
-                + Chunk::TYPE_BYTES_SIZE
-                + Chunk::CRC_BYTES_SIZE;
+            let chunk_length =
+                data_length + Chunk::LENGTH_SIZE + Chunk::TYPE_SIZE + Chunk::CRC_SIZE;
 
             // Extract the complete chunk data
             let chunk_bytes = bytes.get(offset..offset + chunk_length).ok_or_else(|| {
@@ -307,7 +305,6 @@ mod tests {
     use crate::chunk_type::ChunkType;
     use std::convert::TryFrom;
     use std::error::Error;
-    use std::str::FromStr;
 
     fn testing_chunks() -> Vec<Chunk> {
         vec![
@@ -412,7 +409,10 @@ mod tests {
         let png = testing_png();
         let chunk = png.chunk_by_type("FrSt").unwrap();
         assert_eq!(&chunk.chunk_type().to_string(), "FrSt");
-        assert_eq!(&chunk.data_as_string().unwrap(), "I am the first chunk");
+        assert_eq!(
+            &chunk.data_as_str().unwrap().to_string(),
+            "I am the first chunk"
+        );
     }
 
     #[test]
@@ -421,7 +421,7 @@ mod tests {
         png.append_chunk(chunk_from_strings("TeSt", "Message").unwrap());
         let chunk = png.chunk_by_type("TeSt").unwrap();
         assert_eq!(&chunk.chunk_type().to_string(), "TeSt");
-        assert_eq!(&chunk.data_as_string().unwrap(), "Message");
+        assert_eq!(&chunk.data_as_str().unwrap().to_string(), "Message");
     }
 
     #[test]

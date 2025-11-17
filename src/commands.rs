@@ -46,13 +46,11 @@ pub fn encode(file_path: &Path, chunk_type: &str, message: &str, output_file: &P
 pub fn decode(file_path: &Path, chunk_type: &str) -> Result<Option<String>> {
     let bytes = fs::read(&file_path)?;
     let png = Png::try_from(&bytes[..])?;
-    png.chunk_by_type(chunk_type)
-        .map(|chunk| {
-            chunk
-                .data_as_string()
-                .map_err(|_| CommandsError::CorruptedFile)
-        })
-        .transpose()
+
+    let Some(chunk) = png.chunk_by_type(chunk_type) else {
+        return Ok(None);
+    };
+    Ok(Some(chunk.data_as_str()?.to_string()))
 }
 
 pub fn remove(file_path: &Path, chunk_type: &str) -> Result<()> {
