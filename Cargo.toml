@@ -2,6 +2,10 @@
 name = "pngme"
 version = "0.1.0"
 edition = "2024"
+description = "Hide secret messages in PNG images and read them back later"
+authors = ["SCHuang 86014561+huang0520@users.noreply.github.com"]
+repository = "https://github.com/huang0520/PNGMe"
+license = "MIT"
 
 [dependencies]
 crc = "3.3.0"
