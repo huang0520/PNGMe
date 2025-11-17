@@ -5,11 +5,11 @@ use std::path::PathBuf;
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    pub command: Commands,
 }
 
 #[derive(Subcommand)]
-enum Commands {
+pub enum Commands {
     /// Hide a secret message inside a PNG file
     ///
     /// This adds a new chunk to your PNG that contains your message.
@@ -32,9 +32,10 @@ enum Commands {
         /// The secret message you want to hide
         message: String,
 
-        /// Optional: Create a new file instead of changing the original
+        /// Optional: Specify a custom output file path
         ///
-        /// If you don't provide this, the original file will be modified.
+        /// If you don't provide this, a new file will be created with "_encode" suffix
+        /// Example: input.png becomes input_encode.png
         output_file: Option<PathBuf>,
     },
 
