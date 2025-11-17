@@ -7,7 +7,7 @@ use crate::{
 use crc::{CRC_32_ISO_HDLC, Crc};
 
 /// CRC-32 algorithm used for PNG chunk verification (ISO/HDLC).
-const CRC: Crc<u32> = Crc::<u32>::new(&CRC_32_ISO_HDLC);
+pub const CRC: Crc<u32> = Crc::<u32>::new(&CRC_32_ISO_HDLC);
 
 /// PNG chunk as defined in the PNG specification.
 ///
