@@ -3,136 +3,289 @@ use std::{fmt::Display, str::FromStr};
 use crate::{
     chunk::{Chunk, ChunkError},
     chunk_type::{ChunkType, ChunkTypeError},
-    utils::{SliceError, get_slice},
 };
 
+/// Type alias for PNG operation results
+pub type Result<T> = std::result::Result<T, PngError>;
+
+/// Represents a PNG image with its constituent chunks
+///
+/// A PNG file consists of:
+/// - A fixed 8-byte signature header
+/// - One or more chunks containing image data and metadata
 pub struct Png {
+    /// Vector of chunks that make up this PNG image
     chunks: Vec<Chunk>,
 }
 
+/// Errors that can occur during PNG parsing and manipulation.
 #[derive(Debug, thiserror::Error)]
 pub enum PngError {
-    #[error("Insufficient data: need at least {required} bytes, got {actual}")]
-    NotEnoughBytes { required: usize, actual: usize },
-    #[error("Invalid chunk")]
-    InvalidChunk(#[from] ChunkError),
-    #[error("")]
+    /// Returned when there are insufficient bytes to read expected data.
+    ///
+    /// This typically occurs when parsing a truncated or corrupted PNG file.
+    #[error("Insufficient data at position {position}: need {required} bytes, got {actual}")]
+    NotEnoughBytes {
+        /// Byte position in the input where the read was attempted
+        position: usize,
+        required: usize,
+        actual: usize,
+    },
+
+    /// Returned when a chunk fails to parse.
+    ///
+    /// The chunk at the specified position is malformed according to PNG specification.
+    #[error("Invalid chunk at position {position}")]
+    InvalidChunk {
+        /// Byte position in the input where the invalid chunk starts
+        position: usize,
+        #[source]
+        source: ChunkError,
+    },
+
+    /// Returned when the PNG signature header doesn't match the standard.
+    ///
+    /// Valid PNG files must start with the exact 8-byte signature: 89 50 4E 47 0D 0A 1A 0A
+    #[error("Header mismatch: expected {expected:?}, got {actual:?}")]
     HeaderMismatch { expected: [u8; 8], actual: [u8; 8] },
-}
 
-#[derive(Debug, thiserror::Error)]
-pub enum RemoveError {
-    #[error("Invalid chunk type")]
-    InvalidChunkType(#[from] ChunkTypeError),
+    /// Returned when a chunk type string cannot be parsed.
+    ///
+    /// Chunk types must be exactly 4 ASCII letters with specific capitalization rules.
+    #[error("Invalid chunk type '{chunk_type}'")]
+    InvalidChunkType {
+        chunk_type: String,
+        #[source]
+        source: ChunkTypeError,
+    },
 
-    #[error("Chunk not found: type {chunk_type}")]
+    /// Returned when a requested chunk type is not found in the PNG.
+    #[error("Chunk not found: type '{chunk_type}'")]
     ChunkNotFound { chunk_type: String },
 }
 
 impl Png {
+    /// The standard PNG signature header that all valid PNG files must start with.
+    ///
+    /// Bytes: 0x89, '0x50', '0x4E', '0x47', 0x0D, 0x0A, 0x1A, 0x0A
+    /// This signature helps identify the file format and detect common transmission errors.
     pub const STANDARD_HEADER: [u8; 8] = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
+    /// Creates a new PNG from a vector of chunks.
+    ///
+    /// # Parameters
+    ///
+    /// * `chunks` - A vector of `Chunk` objects that will constitute this PNG image
+    ///
+    /// # Returns
+    ///
+    /// A new `Png` instance containing the provided chunks
+    ///
+    /// # Note
+    ///
+    /// This does not validate that the chunks form a valid PNG according to the PNG specification.
+    /// For example, it doesn't verify that required chunks like IHDR are present and in the correct order.
     pub fn from_chunks(chunks: Vec<Chunk>) -> Self {
         Png { chunks }
     }
 
+    /// Appends a chunk to the end of this PNG's chunk list.
+    ///
+    /// # Parameters
+    ///
+    /// * `chunk` - The chunk to append
     pub fn append_chunk(&mut self, chunk: Chunk) {
         self.chunks.push(chunk);
     }
 
-    pub fn remove_first_chunk(&mut self, chunk_type: &str) -> Result<Chunk, RemoveError> {
-        let c_type = ChunkType::from_str(chunk_type)?;
-        for (index, c) in self.chunks.iter().enumerate() {
-            if c.chunk_type() == &c_type {
-                return Ok(self.chunks.remove(index));
-            }
-        }
-        Err(RemoveError::ChunkNotFound {
-            chunk_type: chunk_type.to_string(),
-        })
+    /// Removes and returns the first chunk with the specified type.
+    ///
+    /// # Parameters
+    ///
+    /// * `chunk_type` - A string representing the 4-character chunk type (e.g., "IHDR", "IDAT")
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Chunk)` - The removed chunk if found
+    /// * `Err(PngError::InvalidChunkType)` - If the chunk type string is invalid
+    /// * `Err(PngError::ChunkNotFound)` - If no chunk with that type exists
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let chunk = png.remove_first_chunk(tEXt)?;
+    /// ```
+    pub fn remove_first_chunk(&mut self, chunk_type: &str) -> Result<Chunk> {
+        let c_type =
+            ChunkType::from_str(chunk_type).map_err(|source| PngError::InvalidChunkType {
+                chunk_type: chunk_type.to_string(),
+                source,
+            })?;
+        self.chunks
+            .iter()
+            .position(|c| c.chunk_type() == &c_type)
+            .map(|index| self.chunks.remove(index))
+            .ok_or_else(|| PngError::ChunkNotFound {
+                chunk_type: chunk_type.to_string(),
+            })
     }
 
-    pub fn header(&self) -> &[u8; 8] {
+    /// Returns the standard PNG header bytes.
+    ///
+    /// This is a constant value that all valid PNG files share.
+    /// The returned reference has a static lifetime.
+    pub const fn header(&self) -> &'static [u8; 8] {
         &Self::STANDARD_HEADER
     }
 
+    /// Returns an immutable slice of all chunks in this PNG.
+    ///
+    /// The chunks are returned in the order they appear in the PNG file.
     pub fn chunks(&self) -> &[Chunk] {
         &self.chunks
     }
 
+    /// Finds the first chunk of the specified type.
+    ///
+    /// # Parameters
+    ///
+    /// * `chunk_type` - A string representing the 4-character chunk type to search for
+    ///
+    /// # Returns
+    ///
+    /// * `Some(&Chunk)` - A reference to the first matching chunk if found
+    /// * `None` - If no chunk with that type exists or if the chunk type string is invalid
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// if let Some(chunk) = png.chunk_by_type(IHDR) {
+    ///     println!(Found IHDR chunk with {} bytes, chunk.length());
+    /// }
+    /// ```
     pub fn chunk_by_type(&self, chunk_type: &str) -> Option<&Chunk> {
-        if let Ok(chunk_type) = ChunkType::from_str(chunk_type) {
-            for c in self.chunks.iter() {
-                if c.chunk_type() == &chunk_type {
-                    return Some(c);
-                }
-            }
-        }
-        None
+        let chunk_type = ChunkType::from_str(chunk_type).ok()?;
+        self.chunks.iter().find(|c| c.chunk_type() == &chunk_type)
     }
 
+    /// Serializes this PNG to its byte representation.
+    ///
+    /// This produces a valid PNG file format including:
+    /// 1. The 8-byte PNG signature header
+    /// 2. All chunks in order, each with its length, type, data, and CRC
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<u8>` containing the complete PNG file data
     pub fn as_bytes(&self) -> Vec<u8> {
         Self::STANDARD_HEADER
             .iter()
-            .cloned()
+            .copied()
             .chain(self.chunks.iter().flat_map(|c| c.as_bytes().into_iter()))
             .collect()
     }
 }
 
+/// Implementation for converting a byte slice into a `Png`.
+///
+/// This parses a raw PNG file from its byte representation.
 impl TryFrom<&[u8]> for Png {
     type Error = PngError;
 
-    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
-        let header_length = Self::STANDARD_HEADER.len();
-        let header_bytes: &[u8; 8] = get_slice(&bytes, ..header_length)?
-            .try_into()
-            .expect("always safe due to get_slice() ensures slice with length 8");
+    /// Attempts to parse a PNG from a byte slice.
+    ///
+    /// # Parameters
+    ///
+    /// * `bytes` - The raw PNG file data
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Png)` - Successfully parsed PNG struct
+    /// * `Err(PngError)` - Various parsing errors (invalid header, insufficient data, invalid chunks, etc.)
+    fn try_from(bytes: &[u8]) -> Result<Self> {
+        // Validate PNG signature header
+        let header = bytes.get(..8).ok_or_else(|| PngError::NotEnoughBytes {
+            position: 0,
+            required: Self::STANDARD_HEADER.len(),
+            actual: bytes.len(),
+        })?;
 
-        // Check bytes with standard PNG header
-        if header_bytes != &Self::STANDARD_HEADER {
+        if header != &Self::STANDARD_HEADER {
             return Err(PngError::HeaderMismatch {
                 expected: Self::STANDARD_HEADER,
-                actual: *header_bytes,
+                actual: header.try_into().expect("header slice is exactly 8 bytes"),
             });
         }
 
-        // Extract chunks from bytes
-        let mut remaining_chunks_bytes = get_slice(&bytes, header_length..)?;
-        let mut chunks: Vec<Chunk> = Vec::new();
-        while !remaining_chunks_bytes.is_empty() {
-            // Extract single chunk
-            let data_length: usize = u32::from_be_bytes(
-                get_slice(&remaining_chunks_bytes, ..4)?
-                    .try_into()
-                    .expect("always safe due to get_slice() ensures slice with length 4"),
-            ) as usize;
-            let chunk_length = data_length + 12;
-            chunks.push(Chunk::try_from(get_slice(
-                &remaining_chunks_bytes,
-                ..chunk_length,
-            )?)?);
+        // Parse chunks iteratively
+        let mut chunks = Vec::new();
+        let mut offset: usize = Self::STANDARD_HEADER.len();
 
-            // Drop bytes that already been extract
-            remaining_chunks_bytes = &remaining_chunks_bytes[chunk_length..];
+        while offset < bytes.len() {
+            // Extract the 4-byte length field
+            let length_bytes =
+                bytes
+                    .get(offset..offset + 4)
+                    .ok_or_else(|| PngError::NotEnoughBytes {
+                        position: offset,
+                        required: Chunk::LENGTH_BYTES_SIZE,
+                        actual: bytes.len().saturating_sub(offset),
+                    })?;
+
+            let data_length = u32::from_be_bytes(
+                length_bytes
+                    .try_into()
+                    .expect("length field is exactly 4 bytes"),
+            ) as usize;
+
+            // Calculate total chunk length: length field + type field + data + CRC
+            let chunk_length = data_length
+                + Chunk::LENGTH_BYTES_SIZE
+                + Chunk::TYPE_BYTES_SIZE
+                + Chunk::CRC_BYTES_SIZE;
+
+            // Extract the complete chunk data
+            let chunk_bytes = bytes.get(offset..offset + chunk_length).ok_or_else(|| {
+                PngError::NotEnoughBytes {
+                    position: offset,
+                    required: chunk_length,
+                    actual: bytes.len().saturating_sub(offset),
+                }
+            })?;
+
+            let chunk = Chunk::try_from(chunk_bytes).map_err(|source| PngError::InvalidChunk {
+                position: offset,
+                source,
+            })?;
+
+            chunks.push(chunk);
+            offset += chunk_length;
         }
+
         Ok(Png::from_chunks(chunks))
     }
 }
 
+/// Formats the PNG for display, showing header and chunk summary information.
+///
+/// The output format is:
+/// ```text
+/// PNG Header: 89 50 4e 47 0d 0a 1a 0a
+/// Number of chunks: N
+/// Chunk 0: TYPE (X data bytes)
+/// Chunk 1: TYPE (Y data bytes)
+/// ...
+/// ```
 impl Display for Png {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Display PNG signature header in hex format
         write!(f, "PNG Header: ")?;
-        for &byte in &Self::STANDARD_HEADER {
+        for byte in &Self::STANDARD_HEADER {
             write!(f, "{:02x} ", byte)?;
         }
         writeln!(f)?;
 
-        // Display total number of chunks
         writeln!(f, "Number of chunks: {}", self.chunks.len())?;
 
-        // Display each chunk's index and type
         for (index, chunk) in self.chunks.iter().enumerate() {
             writeln!(
                 f,
@@ -144,17 +297,6 @@ impl Display for Png {
         }
 
         Ok(())
-    }
-}
-
-impl From<SliceError> for PngError {
-    fn from(error: SliceError) -> Self {
-        match error {
-            SliceError::OutOfBounds { start, end, len } => PngError::NotEnoughBytes {
-                required: end.saturating_sub(start),
-                actual: len,
-            },
-        }
     }
 }
 
@@ -180,7 +322,10 @@ mod tests {
         Png::from_chunks(chunks)
     }
 
-    fn chunk_from_strings(chunk_type: &str, data: &str) -> Result<Chunk, Box<dyn Error>> {
+    fn chunk_from_strings(
+        chunk_type: &str,
+        data: &str,
+    ) -> std::result::Result<Chunk, Box<dyn Error>> {
         use std::str::FromStr;
 
         let chunk_type = ChunkType::from_str(chunk_type)?;
