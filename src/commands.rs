@@ -1,13 +1,9 @@
 use std::fs;
 use std::io;
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use crate::chunk::Chunk;
-use crate::chunk::ChunkError;
-use crate::chunk_type::{ChunkType, ChunkTypeError};
-use crate::png::{Png, PngError};
+use pngme::{Chunk, ChunkError, ChunkType, ChunkTypeError, Png, PngError};
 
 pub type Result<T> = std::result::Result<T, CommandsError>;
 
