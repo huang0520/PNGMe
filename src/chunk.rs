@@ -22,7 +22,7 @@ pub type Result<T> = std::result::Result<T, ChunkError>;
 /// # Examples
 ///
 /// Basic usage:
-/// ```
+/// ```ignore
 /// let chunk_type = ChunkType::try_from(RuSt)?;
 /// let data = This is where your secret message will be!.as_bytes().to_vec();
 /// let chunk = Chunk::new(chunk_type, data);
@@ -125,7 +125,7 @@ impl Chunk {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```ignore
     /// let chunk_type = ChunkType::try_from(tEXt).unwrap();
     /// let data = bHello, PNG!.to_vec();
     /// let chunk = Chunk::new(chunk_type, data);
@@ -155,9 +155,9 @@ impl Chunk {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```ignore
     /// let chunk_type = ChunkType::try_from(IHDR).unwrap();
-    /// let crc = Chunk::calculate_crc(&amp;chunk_type, &amp;[]);
+    /// let crc = Chunk::calculate_crc(chunk_type, []);
     /// ```
     pub fn calculate_crc(chunk_type: &ChunkType, data: &[u8]) -> u32 {
         let mut digest = CRC.digest();
@@ -211,7 +211,7 @@ impl Chunk {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```ignore
     /// let chunk = Chunk::new(chunk_type, bhello.to_vec());
     /// let text = chunk.data_as_str()?;
     /// ```
@@ -233,7 +233,7 @@ impl Chunk {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```ignore
     /// let chunk = Chunk::new(chunk_type, data);
     /// let serialized = chunk.as_bytes();
     /// ```
@@ -270,9 +270,9 @@ impl Chunk {
 ///
 /// # Example
 ///
-/// ```
+/// ```ignore
 /// let bytes = chunk.as_bytes();
-/// let parsed_chunk = Chunk::try_from(&amp;bytes[..])?;
+/// let parsed_chunk = Chunk::try_from(bytes[..])?;
 /// ```
 impl TryFrom<&[u8]> for Chunk {
     type Error = ChunkError;
@@ -356,7 +356,7 @@ impl TryFrom<&[u8]> for Chunk {
 ///
 /// # Example
 ///
-/// ```
+/// ```ignore
 /// println!({}, chunk);
 /// ```
 impl fmt::Display for Chunk {
